@@ -24,7 +24,11 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
 def load_bkpf(settings: Settings, keys_only: bool = False) -> pd.DataFrame:
     read_fields = ["MANDT", "BUKRS", "BELNR", "GJAHR", "BUDAT"] if keys_only else list(BKPF_FIELDS)
     chunks = []
-    for chunk in iter_delimited(find_table_files(settings.input_dir, "BKPF"), read_fields, settings.chunk_rows):
+    for chunk in iter_delimited(
+        find_table_files(settings.input_dir, "BKPF", settings.file_prefix),
+        read_fields,
+        settings.chunk_rows,
+    ):
         chunk = _clean(chunk)
         mask = (
             chunk["MANDT"].eq(settings.client)
@@ -87,6 +91,9 @@ def _merge_dimensions(df: pd.DataFrame, dims: dict[str, pd.DataFrame]) -> pd.Dat
 
 
 def _journal_view(df: pd.DataFrame, record_class: str = "正常日记账") -> pd.DataFrame:
+    # LIFNR/KUNNR are intentionally copied from the current ACDOCA line only.
+    # Do not propagate business partners across document lines or infer them
+    # through purchase orders: this package promises direct-source fields only.
     hsl = pd.to_numeric(df["HSL"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0).round(2)
     wsl = pd.to_numeric(df["WSL"].str.replace(",", "", regex=False), errors="coerce").fillna(0.0).round(2)
     debit = df["DRCRK"].eq("S")
@@ -139,7 +146,11 @@ def classify_acdoca(settings: Settings) -> dict[str, object]:
     bkpf = load_bkpf(settings, keys_only=True)
     parts: dict[str, list[pd.DataFrame]] = {"正常日记账": [], "余额结转BCF": [], "余额结转补充项": [], "无BKPF待核查": []}
     counts: defaultdict[str, int] = defaultdict(int)
-    for chunk in iter_delimited(find_table_files(settings.input_dir, "ACDOCA"), CLASSIFY_FIELDS, settings.chunk_rows):
+    for chunk in iter_delimited(
+        find_table_files(settings.input_dir, "ACDOCA", settings.file_prefix),
+        CLASSIFY_FIELDS,
+        settings.chunk_rows,
+    ):
         chunk = _clean(chunk)
         mask = chunk["RCLNT"].eq(settings.client) & chunk["GJAHR"].eq(settings.year) & chunk["RLDNR"].eq(settings.ledger)
         if settings.companies:
@@ -174,7 +185,7 @@ def classify_acdoca(settings: Settings) -> dict[str, object]:
         combined["本位币金额"] = combined["本位币金额"].round(2)
         summaries.append(combined)
     summary = pd.concat(summaries, ignore_index=True) if summaries else pd.DataFrame()
-    summary_path = settings.output_dir / "ACDOCA分类汇总_2026H1.csv"
+    summary_path = settings.output_path("ACDOCA分类汇总")
     summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
     report = {
         "counts": dict(counts), "total": int(sum(counts.values())), "summary": str(summary_path),
@@ -185,7 +196,7 @@ def classify_acdoca(settings: Settings) -> dict[str, object]:
             "无BKPF待核查": "不满足上述规则且不能匹配 BKPF，不计入期间发生额",
         },
     }
-    report_path = settings.output_dir / "ACDOCA分类报告_2026H1.json"
+    report_path = settings.output_path("ACDOCA分类报告", ".json")
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     report["report"] = str(report_path)
     return report
@@ -200,7 +211,7 @@ def build_journal(settings: Settings) -> dict[str, object]:
     bcf_parts: list[pd.DataFrame] = []
     unmatched_parts: list[pd.DataFrame] = []
     counts: defaultdict[str, int] = defaultdict(int)
-    acdoca_files = find_table_files(settings.input_dir, "ACDOCA")
+    acdoca_files = find_table_files(settings.input_dir, "ACDOCA", settings.file_prefix)
     if not acdoca_files:
         raise FileNotFoundError("未找到 ACDOCA 分片")
 
@@ -251,7 +262,12 @@ def build_journal(settings: Settings) -> dict[str, object]:
             if company not in writers:
                 company_dir = settings.output_dir / "序时账"
                 company_dir.mkdir(parents=True, exist_ok=True)
-                writers[company] = SplitCsvWriter(company_dir, f"序时账_{company}_2026H1", settings.rows_per_file, JOURNAL_COLUMNS)
+                writers[company] = SplitCsvWriter(
+                    company_dir,
+                    f"序时账_{company}_{settings.run_label}",
+                    settings.rows_per_file,
+                    JOURNAL_COLUMNS,
+                )
             writers[company].write(part)
             counts[f"公司_{company}"] += len(part)
     for writer in writers.values():
@@ -264,7 +280,7 @@ def build_journal(settings: Settings) -> dict[str, object]:
         summary["净发生额"] = (summary["借方本位币"] - summary["贷方本位币"]).round(2)
     else:
         summary = pd.DataFrame(columns=["公司代码", "总账科目", "借方本位币", "贷方本位币", "本位币金额", "净发生额"])
-    summary_path = settings.output_dir / "序时账期间汇总_2026H1.csv"
+    summary_path = settings.output_path("序时账期间汇总")
     summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
 
     def combine_raw(parts: list[pd.DataFrame], filename: str) -> Path:
@@ -277,8 +293,8 @@ def build_journal(settings: Settings) -> dict[str, object]:
         data.to_csv(path, index=False, encoding="utf-8-sig")
         return path
 
-    bcf_path = combine_raw(bcf_parts, "余额结转BCF汇总_2026H1.csv")
-    unmatched_path = combine_raw(unmatched_parts, "无BKPF待核查汇总_2026H1.csv")
+    bcf_path = combine_raw(bcf_parts, f"余额结转BCF汇总_{settings.run_label}.csv")
+    unmatched_path = combine_raw(unmatched_parts, f"无BKPF待核查汇总_{settings.run_label}.csv")
     return {
         "counts": dict(counts), "summary": summary_path, "balance_carryforward": bcf_path,
         "unmatched": unmatched_path, "files": {c: [str(p) for p in w.paths] for c, w in writers.items()},
