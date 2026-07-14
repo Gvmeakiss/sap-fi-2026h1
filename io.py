@@ -16,19 +16,25 @@ def normalize(value: object) -> str:
     return value[:-2] if value.endswith(".0") else value
 
 
-def find_table_files(input_dir: Path, table: str) -> list[Path]:
+def find_table_files(input_dir: Path, table: str, file_prefix: str | None = None) -> list[Path]:
     """Find extracted TXT parts and ignore KPMG log files and ZIP duplicates."""
     token = table.upper()
-    files = [
-        p for p in input_dir.rglob("*.TXT")
-        if "KPMG_LOG" not in p.name.upper()
-        and (p.name.upper().startswith(f"FI202606{token}_") or p.name.upper().startswith(f"{token}_"))
-    ]
+    prefix = (file_prefix or "").upper()
+    files = []
+    for p in input_dir.rglob("*"):
+        name = p.name.upper()
+        if not p.is_file() or p.suffix.upper() != ".TXT" or "KPMG_LOG" in name:
+            continue
+        if f"{token}_" not in name:
+            continue
+        if prefix and not (name.startswith(f"{prefix}{token}_") or name.startswith(f"{prefix}_{token}_")):
+            continue
+        files.append(p)
     return sorted(files)
 
 
-def first_table_file(input_dir: Path, table: str) -> Path:
-    files = find_table_files(input_dir, table)
+def first_table_file(input_dir: Path, table: str, file_prefix: str | None = None) -> Path:
+    files = find_table_files(input_dir, table, file_prefix)
     if not files:
         raise FileNotFoundError(f"未找到 {table} TXT 文件: {input_dir}")
     return files[0]
@@ -73,8 +79,13 @@ def iter_delimited(
                 yield pd.DataFrame.from_records(batch, columns=columns)
 
 
-def read_table(input_dir: Path, table: str, usecols: Iterable[str] | None = None) -> pd.DataFrame:
-    files = find_table_files(input_dir, table)
+def read_table(
+    input_dir: Path,
+    table: str,
+    usecols: Iterable[str] | None = None,
+    file_prefix: str | None = None,
+) -> pd.DataFrame:
+    files = find_table_files(input_dir, table, file_prefix)
     if not files:
         return pd.DataFrame(columns=list(usecols or ()))
     return pd.concat(iter_delimited(files, usecols, 200_000), ignore_index=True)
@@ -135,4 +146,3 @@ class SplitCsvWriter:
 
     def close(self) -> None:
         self.close_current()
-

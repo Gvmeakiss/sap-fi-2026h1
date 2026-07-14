@@ -1,22 +1,47 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+import re
 
 
 @dataclass(slots=True)
 class Settings:
     input_dir: Path
     output_dir: Path
-    year: str = "2026"
-    date_from: str = "20260101"
-    date_to: str = "20260630"
+    year: str
+    date_from: str
+    date_to: str
+    client: str
     ledger: str = "0L"
-    client: str = "800"
     languages: tuple[str, ...] = ("ZH", "1", "EN", "E")
     chunk_rows: int = 200_000
     rows_per_file: int = 800_000
     companies: tuple[str, ...] = field(default_factory=tuple)
+    period_start: int | None = None
+    period_end: int | None = None
+    label: str | None = None
+    file_prefix: str | None = None
+
+    @property
+    def first_period(self) -> int:
+        return self.period_start if self.period_start is not None else int(self.date_from[4:6])
+
+    @property
+    def last_period(self) -> int:
+        return self.period_end if self.period_end is not None else int(self.date_to[4:6])
+
+    @property
+    def run_label(self) -> str:
+        raw = self.label or f"{self.year}P{self.first_period:02d}-{self.last_period:02d}"
+        cleaned = re.sub(r"[^0-9A-Za-z_-]+", "_", raw).strip("_")
+        if not cleaned:
+            raise ValueError("label 不能是空值或只包含特殊字符")
+        return cleaned
+
+    def output_path(self, stem: str, suffix: str = ".csv") -> Path:
+        return self.output_dir / f"{stem}_{self.run_label}{suffix}"
 
     def prepare(self) -> None:
         self.input_dir = self.input_dir.expanduser().resolve()
@@ -24,8 +49,19 @@ class Settings:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         if not self.input_dir.is_dir():
             raise FileNotFoundError(f"输入目录不存在: {self.input_dir}")
-        if self.date_from > self.date_to:
+        try:
+            start = datetime.strptime(self.date_from, "%Y%m%d")
+            end = datetime.strptime(self.date_to, "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError("date_from/date_to 必须是有效的 YYYYMMDD 日期") from exc
+        if start > end:
             raise ValueError("date_from 不能晚于 date_to")
+        if start.strftime("%Y") != self.year or end.strftime("%Y") != self.year:
+            raise ValueError("当前工具按单一会计年度处理，日期范围必须与 year 同年")
+        if not 1 <= self.first_period <= self.last_period <= 16:
+            raise ValueError("period_start/period_end 必须满足 1 <= start <= end <= 16")
+        if self.rows_per_file >= 1_000_000:
+            raise ValueError("rows_per_file 必须小于 1,000,000，以便后续安全转换为 Excel")
 
 
 SEP = "#|#"

@@ -7,7 +7,7 @@ from .io import choose_language, read_table
 
 
 def _dim(settings: Settings, table: str, cols: list[str], keys: list[str], lang: str | None = None) -> pd.DataFrame:
-    df = read_table(settings.input_dir, table, cols)
+    df = read_table(settings.input_dir, table, cols, settings.file_prefix)
     if df.empty:
         return df
     for col in df.columns:

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sap-s4hana-journal"
+version = "1.0.0"
+description = "Reusable ACDOCA-driven S/4HANA FI journal export and reconciliation tool"
+requires-python = ">=3.11"
+dependencies = [
+  "pandas>=2.2,<3",
+  "numpy>=2.0,<3",
+  "openpyxl>=3.1,<4",
+  "xlsxwriter>=3.2,<4",
+]
+
+[project.scripts]
+s4hana-journal = "sap_s4hana_journal.cli:main"
+s4hana-csv-to-xlsx = "sap_s4hana_journal.csv_to_xlsx:main"
+
+[tool.setuptools]
+packages = ["sap_s4hana_journal"]
